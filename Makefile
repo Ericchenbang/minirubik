@@ -19,8 +19,25 @@ all: solver mini
 solver: solver.c
 	$(CC) $(CFLAGS) $< -o $@
 
+ida_solver: ida_solver.c
+	$(CC) $(CFLAGS) $< -o $@
+
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
+
+verify: tests/verify.c
+	$(CC) $(VERIFY_CFLAGS) $< -o $@
+
+verify-fast: verify
+	./verify tables
+	./verify dist
+	./verify h1
+	./verify h2
+	./verify h3 97 0
+
+verify-h3: verify
+	./verify h3
+
 
 check: solver mini $(VECTORS)
 	./solver --self-test
@@ -94,4 +111,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini
+	$(RM) solver mini ida_solver verify

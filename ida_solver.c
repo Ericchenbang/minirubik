@@ -386,150 +386,20 @@ static uint8_t heuristic(uint16_t p, uint16_t o)
     return hp > ho ? hp : ho;
 }
 
-// verify H1
-static uint8_t exact_distance[STATES];
-static void build_exact_distance(void)
-{
-    uint32_t *queue = malloc((size_t)STATES * sizeof(*queue));
-
-    if (queue == NULL) {
-        fprintf(stderr, "failed to allocate BFS queue\n");
-        exit(EXIT_FAILURE);
-    }
-
-    for (uint32_t i = 0; i < STATES; ++i)
-        exact_distance[i] = 0xff;
-
-    uint32_t head = 0;
-    uint32_t tail = 0;
-
-    exact_distance[0] = 0;
-    queue[tail++] = 0;
-
-    while (head < tail) {
-        uint32_t state = queue[head++];
-        uint16_t p = state / ORIENTATIONS;
-        uint16_t o = state % ORIENTATIONS;
-        uint8_t d = exact_distance[state];
-
-        for (uint8_t face = 0; face < 3; ++face) {
-            uint16_t np = permutation[face][p];
-            uint16_t no = orientation[face][o];
-
-            for (uint8_t turns = 1; turns <= 3; ++turns) {
-                if (turns > 1) {
-                    np = permutation[face][np];
-                    no = orientation[face][no];
-                }
-
-                uint32_t next =
-                    (uint32_t)np * ORIENTATIONS + no;
-
-                if (exact_distance[next] == 0xff) {
-                    exact_distance[next] = d + 1;
-                    queue[tail++] = next;
-                }
-            }
-        }
-    }
-
-    if (tail != STATES) {
-        fprintf(stderr,
-                "ERROR: BFS visited %u / %u states\n",
-                tail, STATES);
-        free(queue);
-        exit(EXIT_FAILURE);
-    }
-
-    free(queue);
-}
-
-// verify H1
-static int verify_heuristic_admissibility(void)
-{
-    uint32_t violations = 0;
-    uint8_t max_h = 0;
-    uint8_t max_d = 0;
-
-    for (uint32_t state = 0; state < STATES; ++state) {
-        uint16_t p = state / ORIENTATIONS;
-        uint16_t o = state % ORIENTATIONS;
-
-        uint8_t h = heuristic(p, o);
-        uint8_t d = exact_distance[state];
-
-        if (h > max_h)
-            max_h = h;
-
-        if (d > max_d)
-            max_d = d;
-
-        if (h > d) {
-            if (violations < 10) {
-                printf("H1 violation: state=%u, h=%u, d=%u\n",
-                       state, h, d);
-            }
-            ++violations;
-        }
-    }
-
-    printf("H1: max heuristic = %u\n", max_h);
-    printf("H1: max exact distance = %u\n", max_d);
-    printf("H1: violations = %u\n", violations);
-
-    return violations == 0;
-}
-
-
-// verify H2
-static int verify_pdb(void)
-{
-    uint8_t permutation_max = 0;
-    uint8_t orientation_max = 0;
-
-    for (uint16_t i = 0; i < PERMUTATIONS; ++i) {
-        if (permutation_distance[i] == 0xff)
-            return 0;
-
-        if (permutation_distance[i] > permutation_max)
-            permutation_max = permutation_distance[i];
-    }
-
-    for (uint16_t i = 0; i < ORIENTATIONS; ++i) {
-        if (orientation_distance[i] == 0xff)
-            return 0;
-
-        if (orientation_distance[i] > orientation_max)
-            orientation_max = orientation_distance[i];
-    }
-
-    if (permutation_distance[0] != 0)
-        return 0;
-
-    if (orientation_distance[0] != 0)
-        return 0;
-
-    printf("Permutation PDB: max = %u, solved = %u\n",
-           permutation_max,
-           permutation_distance[0]);
-
-    printf("Orientation PDB: max = %u, solved = %u\n",
-           orientation_max,
-           orientation_distance[0]);
-
-    return 1;
-}
 
 static uint8_t solution[MAX_DEPTH]; /* solution[i] = i-th move, 0..8 */
-static uint64_t nodes_expanded;
+static uint64_t nodes_expanded, nodes_generated;
  
 /* Returns the optimal length; the moves are left in solution[]. */
 static uint8_t ida_star(uint16_t p0, uint16_t o0)
 {
-    uint16_t sp[MAX_DEPTH + 1], so[MAX_DEPTH + 1]; /* state at each depth */
-    uint8_t next[MAX_DEPTH + 1];                   /* next move to try there */
+    // state at each depth 
+    uint16_t sp[MAX_DEPTH + 1];
+    uint16_t so[MAX_DEPTH + 1]; 
+    // next move to try there 
+    uint8_t next[MAX_DEPTH + 1];                  
  
-    nodes_expanded = 0;
+    nodes_expanded = nodes_generated = 0;
     
     if (p0 == 0 && o0 == 0)
         return 0;
@@ -564,6 +434,7 @@ static uint8_t ida_star(uint16_t p0, uint16_t o0)
             uint8_t g = (uint8_t) (d + 1);
             uint8_t h = heuristic(p, o);
             uint8_t f = g + h;
+            ++nodes_generated;
 
             if (f > bound){             /* f = g + h exceeds this iteration's bound */
                 if (f < next_bound){
@@ -588,83 +459,19 @@ static uint8_t ida_star(uint16_t p0, uint16_t o0)
     }
 }
 
-// verify T5
-static int verify_solution(uint16_t p0, uint16_t o0, uint8_t length)
-{
-    uint16_t p = p0;
-    uint16_t o = o0;
-
-    for (uint8_t d = 0; d < length; ++d) {
-        uint8_t m = solution[d];
-        uint8_t face = m / 3;
-        uint8_t turns = m % 3 + 1;
-
-        for (uint8_t k = 0; k < turns; ++k) {
-            p = permutation[face][p];
-            o = orientation[face][o];
-        }
-    }
-
-    return p == 0 && o == 0;
-}
-
-// verify H3
-static int verify_ida_optimality(void)
-{
-    uint32_t failures = 0;
-
-    for (uint32_t state = 0; state < STATES; ++state) {
-        uint16_t p = (uint16_t)(state / ORIENTATIONS);
-        uint16_t o = (uint16_t)(state % ORIENTATIONS);
-
-        uint8_t expected = exact_distance[state];
-        uint8_t actual = ida_star(p, o);
-
-        if (actual != expected ||
-            !verify_solution(p, o, actual)) {
-
-            if (failures < 10) {
-                printf("H3 failure: state=%u, expected=%u, actual=%u\n",
-                       state, expected, actual);
-            }
-
-            ++failures;
-        }
-
-        if ((state + 1) % 100000 == 0) {
-            printf("H3 progress: %u / %u\n",
-                   state + 1, STATES);
-        }
-    }
-
-    printf("H3: failures = %u\n", failures);
-
-    return failures == 0;
-}
-
 static void init_tables(void)
 {
     build_transition_tables();
     build_permutation_pdb();
     build_orientation_pdb();
-
-    build_exact_distance();
-
-    // verify H1
-    // if (!verify_heuristic_admissibility()){
-    //     fputs("Heuristic verification failed\n", stderr);
-    //     exit(1);
-    // }
-        
-    // verify H2
-    if (!verify_pdb()) {
-        fputs("PDB verification failed\n", stderr);
-        exit(1);
-    }
 }
 
+#ifndef SOLVER_NO_MAIN
 int main(int argc, char **argv)
 {
+    state_t state;
+    uint8_t diameter;
+
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         if (!self_test()) {
             fputs("self-test failed\n", stderr);
@@ -673,66 +480,25 @@ int main(int argc, char **argv)
         puts("moves and rank/unrank consistent");
         return output_failed();
     }
-
-    /*
-     * Host-side H1/H2/H3 verification.
-     * No input state is required.
-     */
+    if (argc != 2 || !parse_state(argv[1], &state)) {
+        // C99 5.1.2.2.1 lets argv[0] be null when argc is 0. 
+        fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
+                argc > 0 && argv[0] ? argv[0] : "solver");
+        return 2;
+    }
+    
     init_tables();
-
-    if (!verify_heuristic_admissibility()) {
-        fputs("Heuristic verification failed\n", stderr);
-        return 1;
-    }
-
-    if (!verify_ida_optimality()) {
-        fputs("IDA* optimality verification failed\n", stderr);
-        return 1;
-    }
-
-    puts("H1/H2/H3 verification passed");
-
+    uint32_t rank = rank_state(&state);
+    uint8_t len = ida_star((uint16_t) (rank / ORIENTATIONS),
+                           (uint16_t) (rank % ORIENTATIONS));
+    
+    for (uint8_t i = 0; i < len; ++i)
+        printf("%s%s", i ? " " : "", move_names[solution[i]]);
+    putchar('\n');
+    if (getenv("SOLVER_STATS"))
+        fprintf(stderr, "length %u, expanded %llu\n", len,
+                (unsigned long long) nodes_expanded);
+    
     return output_failed();
 }
-
-
-// int main(int argc, char **argv)
-// {
-//     state_t state;
-//     uint8_t diameter;
-
-//     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
-//         if (!self_test()) {
-//             fputs("self-test failed\n", stderr);
-//             return 1;
-//         }
-//         puts("moves and rank/unrank consistent");
-//         return output_failed();
-//     }
-//     if (argc != 2 || !parse_state(argv[1], &state)) {
-//         // C99 5.1.2.2.1 lets argv[0] be null when argc is 0. 
-//         fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
-//                 argc > 0 && argv[0] ? argv[0] : "solver");
-//         return 2;
-//     }
-    
-//     init_tables();
-//     uint32_t rank = rank_state(&state);
-//     uint8_t len = ida_star((uint16_t) (rank / ORIENTATIONS),
-//                            (uint16_t) (rank % ORIENTATIONS));
-//     // verify T5
-//     if (!verify_solution((uint16_t) (rank / ORIENTATIONS),
-//                            (uint16_t) (rank % ORIENTATIONS), len)) {
-//         fprintf(stderr, "ERROR: solution does not reach solved state\n");
-//         return 1;
-//     }
-    
-//     for (uint8_t i = 0; i < len; ++i)
-//         printf("%s%s", i ? " " : "", move_names[solution[i]]);
-//     putchar('\n');
-//     if (getenv("SOLVER_STATS"))
-//         fprintf(stderr, "length %u, expanded %llu\n", len,
-//                 (unsigned long long) nodes_expanded);
-    
-//     return output_failed();
-// }
+#endif
