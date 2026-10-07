@@ -30,7 +30,7 @@ verify: tests/verify.c
 
 verify-fast: verify
 	./verify tables
-	./verify dist
+	./verify parse
 	./verify h1
 	./verify h2
 	./verify h3 97 0

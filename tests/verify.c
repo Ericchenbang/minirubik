@@ -1,7 +1,8 @@
 /* Host-side correctness gates for the IDA* solver (never built for the target).
  *
- *   cc -O2 -std=c99 -Wall -Wextra tests/verify.c -o verify
+ *   cc -O2 -std=c99 -Wall -Wextra -DSOLVER_STATS tests/verify.c -o verify
  *   ./verify tables          C0 factored tables == apply_move/rank_state
+ *   ./verify parse           C2 parse_state ranks == rank_state, rejects junk
  *   ./verify dist            C1 BFS level counts == published distribution
  *   ./verify h1              H1 h(s) <= d(s) for every state
  *   ./verify h2              H2 PDBs fully populated, solved entry 0
@@ -9,7 +10,7 @@
  *                            r % MOD == REM (MOD=1: all; split across cores)
  *   ./verify all             tables, dist, h1, h2, then h3 over everything
  */
-#define SOLVER_NO_MAIN 1
+#include "../model.h"
 #include "../ida_solver.c"
 #include <time.h>
 
@@ -95,12 +96,60 @@ static int check_distribution(void)
     return ok;
 }
 
+static void state_string(uint32_t rank, char out[15])
+{
+    state_t s;
+    unrank_state(rank, &s);
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        out[i] = (char) ('1' + s.p[i]);
+        out[i + CUBIES] = (char) ('1' + s.o[i]);
+    }
+    out[14] = '\0';
+}
+
+
+/* C2: parse_state computes the two ranks with shifts and adds only.  Check
+ * it against rank_state for every legal state, and that it rejects illegal
+ * strings. */
+static int check_parse(void)
+{
+    uint32_t bad = 0;
+    char text[15];
+    for (uint32_t r = 0; r < STATES; ++r) {
+        uint32_t p, o;
+        state_string(r, text);
+        if (!parse_state(text, &p, &o) || p != r / ORIENTATIONS ||
+            o != r % ORIENTATIONS) {
+            if (bad++ < 5)
+                printf("C2 mismatch at rank %u (%s)\n", r, text);
+        }
+    }
+    static const char *const junk[] = {
+        "11345671111111", /* duplicate cubie */
+        "12345681111111", /* cubie out of range */
+        "12345670111111", /* twist below range */
+        "12345671111114", /* twist above range */
+        "12345671111112", /* twist sum not 0 mod 3 */
+        "1234567111111",  /* too short */
+        "123456711111111" /* too long */
+    };
+    for (unsigned i = 0; i < sizeof junk / sizeof *junk; ++i) {
+        uint32_t p, o;
+        if (parse_state(junk[i], &p, &o)) {
+            printf("C2: accepted illegal %s\n", junk[i]);
+            ++bad;
+        }
+    }
+    printf("C2: parse_state mismatches = %u\n", bad);
+    return bad == 0;
+}
+
 static int verify_heuristic_admissibility(void)
 {
     uint32_t violations = 0, slack[12] = {0};
     uint8_t max_h = 0;
     for (uint32_t s = 0; s < STATES; ++s) {
-        uint8_t h = heuristic((uint16_t) (s / ORIENTATIONS), s % ORIENTATIONS);
+        uint8_t h = (uint8_t) heuristic(s / ORIENTATIONS, s % ORIENTATIONS);
         uint8_t d = exact_distance[s];
         if (h > max_h)
             max_h = h;
@@ -147,20 +196,10 @@ static int path_solves(uint32_t rank, uint8_t length)
     state_t s;
     unrank_state(rank, &s);
     for (uint8_t i = 0; i < length; ++i)
-        s = apply_move(s, solution[i]);
+        s = apply_move(s, (uint8_t) (solution_face[i] * 3 + solution_turn[i] - 1));
     return rank_state(&s) == 0;
 }
 
-static void state_string(uint32_t rank, char out[15])
-{
-    state_t s;
-    unrank_state(rank, &s);
-    for (uint8_t i = 0; i < CUBIES; ++i) {
-        out[i] = (char) ('1' + s.p[i]);
-        out[i + CUBIES] = (char) ('1' + s.o[i]);
-    }
-    out[14] = '\0';
-}
 
 static int verify_ida_optimality(uint32_t mod, uint32_t rem)
 {
@@ -170,23 +209,23 @@ static int verify_ida_optimality(uint32_t mod, uint32_t rem)
     time_t t0 = time(NULL);
     for (uint32_t r = rem; r < STATES; r += mod) {
         uint8_t expected = exact_distance[r];
-        uint8_t actual = ida_star((uint16_t) (r / ORIENTATIONS),
-                                  r % ORIENTATIONS);
-        if (actual != expected || !path_solves(r, actual)) {
+        uint32_t actual = ida_star(r / ORIENTATIONS, r % ORIENTATIONS);
+        if (actual != expected || !path_solves(r, (uint8_t) actual) ||
+            !path_reaches_solved(r / ORIENTATIONS, r % ORIENTATIONS, actual)) {
             if (failures++ < 10)
                 printf("H3 failure: state=%u, expected=%u, actual=%u\n", r,
                        expected, actual);
         }
         ++count;
-        total += nodes_expanded;
-        if (nodes_expanded > max_exp)
-            max_exp = nodes_expanded;
-        if (nodes_generated > max_gen)
-            max_gen = nodes_generated;
-        if (expected == 11 && nodes_expanded > max11) {
-            max11 = nodes_expanded;
-            worst11 = r;
-        }
+        // total += nodes_expanded;
+        // if (nodes_expanded > max_exp)
+        //     max_exp = nodes_expanded;
+        // if (nodes_generated > max_gen)
+        //     max_gen = nodes_generated;
+        // if (expected == 11 && nodes_expanded > max11) {
+        //     max11 = nodes_expanded;
+        //     worst11 = r;
+        // }
     }
     char text[15] = "";
     if (max11)
@@ -202,6 +241,7 @@ static int verify_ida_optimality(uint32_t mod, uint32_t rem)
     return failures == 0;
 }
 
+
 int main(int argc, char **argv)
 {
     const char *cmd = argc > 1 ? argv[1] : "all";
@@ -213,18 +253,15 @@ int main(int argc, char **argv)
         fputs("need MOD >= 1 and REM < MOD\n", stderr);
         return 2;
     }
-    build_transition_tables();
-    build_permutation_pdb();
-    build_orientation_pdb();
-
     if (all || !strcmp(cmd, "tables")) { ok &= check_tables(); ran = 1; }
     build_exact_distance();
+    if (all || !strcmp(cmd, "parse"))  { ok &= check_parse(); ran = 1; }
     if (all || !strcmp(cmd, "dist"))   { ok &= check_distribution(); ran = 1; }
     if (all || !strcmp(cmd, "h1"))     { ok &= verify_heuristic_admissibility(); ran = 1; }
     if (all || !strcmp(cmd, "h2"))     { ok &= verify_pdb(); ran = 1; }
     if (all || !strcmp(cmd, "h3"))     { ok &= verify_ida_optimality(mod, rem); ran = 1; }
     if (!ran) {
-        fprintf(stderr, "usage: %s tables|dist|h1|h2|h3 [MOD [REM]]|all\n", argv[0]);
+        fprintf(stderr, "usage: %s tables|parse|dist|h1|h2|h3 [MOD [REM]]|all\n", argv[0]);
         return 2;
     }
     puts(ok ? "ALL REQUESTED CHECKS PASSED" : "SOME CHECK FAILED");
