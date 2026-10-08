@@ -90,11 +90,18 @@ uint32_t ida_star(uint32_t p0, uint32_t o0)
             /* turn 1 starts from this node; turn 2 and 3 take one more
              * quarter turn from the child just generated (kept in d+1). */
             uint32_t src = d + (t > 1);
-            uint32_t p = perm_face[f][sp[src]], o = ori_face[f][so[src]];
-            uint32_t g = d + 1, h = heuristic(p, o), cost = g + h;
+            uint32_t p = perm_face[f][sp[src]];
+            uint32_t o = ori_face[f][so[src]];
+            
+            uint32_t g = d + 1;
+            uint32_t h = heuristic(p, o);
+            uint32_t cost = g + h;
+
             sp[g] = (uint16_t) p;
             so[g] = (uint16_t) o;
+            
             COUNT(nodes_generated);
+            
             if (cost > bound) {
                 if (cost < next_bound)
                     next_bound = cost;
